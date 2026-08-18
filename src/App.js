@@ -51,13 +51,6 @@ const DAYS_OF_WEEK = [
 const dayLabel = (v) => DAYS_OF_WEEK.find(d => d.value === v)?.label || "—";
 const todayDow = () => new Date().getDay();
 
-// Weekly recurring schedule support — Admin sets which day(s) of the
-// week a teacher teaches which class, at which time. JS getDay():
-// 0=Sunday..6=Saturday, mapped to Khmer day names below.
-const DAY_OPTIONS = ["ចន្ទ", "អង្គារ", "ពុធ", "ព្រហស្បតិ៍", "សុក្រ", "សៅរ៍", "អាទិត្យ"];
-const DAY_BY_JS_INDEX = ["អាទិត្យ", "ចន្ទ", "អង្គារ", "ពុធ", "ព្រហស្បតិ៍", "សុក្រ", "សៅរ៍"];
-const todayDayName = () => DAY_BY_JS_INDEX[new Date().getDay()];
-
 // Fetch known class names from Firestore (for datalist suggestions)
 function useClassSuggestions() {
   const [classNames, setClassNames] = useState([]);
@@ -247,17 +240,23 @@ function LoginPage({ onAlert }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
 
   const handleLogin = async () => {
-    if (!email || !password) { onAlert("សូមបញ្ចូល Email និង Password", "error"); return; }
+    setError("");
+    if (!email || !password) { setError("សូមបញ្ចូល Email និង Password"); return; }
     setLoading(true);
     try {
       await signInWithEmailAndPassword(auth, email, password);
+      // onAuthStateChanged in App() handles what happens next
     } catch (err) {
-      const msg = ["auth/invalid-credential", "auth/wrong-password", "auth/user-not-found"].includes(err.code)
-        ? "Email ឬ Password មិនត្រឹមត្រូវ"
-        : err.message;
-      onAlert(msg, "error");
+      const notFoundCodes = ["auth/invalid-credential", "auth/wrong-password", "auth/user-not-found", "auth/invalid-email"];
+      const msg = notFoundCodes.includes(err.code)
+        ? "❌ Email ឬ Password មិនត្រឹមត្រូវ — សូមពិនិត្យម្តងទៀត"
+        : err.code === "auth/too-many-requests"
+          ? "⚠️ បានព្យាយាមខុសច្រើនដង — សូមរង់ចាំបន្តិចមុននឹងសាកម្តងទៀត"
+          : "❌ " + err.message;
+      setError(msg);
     }
     setLoading(false);
   };
@@ -269,15 +268,21 @@ function LoginPage({ onAlert }) {
         <h2 style={styles.loginTitle}>ប្រព័ន្ធគ្រប់គ្រងអវត្តមាន</h2>
         <p style={styles.loginSub}>School Attendance Management System</p>
 
+        {error && (
+          <div style={{ background: "#450a0a", border: "1px solid #dc2626", borderRadius: 8, padding: "10px 14px", fontSize: 13, color: "#fca5a5", marginBottom: 16 }}>
+            {error}
+          </div>
+        )}
+
         <div style={{ marginBottom: 12 }}>
           <label style={styles.label}>Email</label>
-          <input style={styles.input} type="email" placeholder="you@school.edu.kh" value={email}
-            onChange={e => setEmail(e.target.value)} onKeyDown={e => e.key === "Enter" && handleLogin()} />
+          <input style={{ ...styles.input, border: error ? "1px solid #dc2626" : styles.input.border }} type="email" placeholder="you@school.edu.kh" value={email}
+            onChange={e => { setEmail(e.target.value); setError(""); }} onKeyDown={e => e.key === "Enter" && handleLogin()} />
         </div>
         <div style={{ marginBottom: 20 }}>
           <label style={styles.label}>Password</label>
-          <input style={styles.input} type="password" placeholder="••••••••" value={password}
-            onChange={e => setPassword(e.target.value)} onKeyDown={e => e.key === "Enter" && handleLogin()} />
+          <input style={{ ...styles.input, border: error ? "1px solid #dc2626" : styles.input.border }} type="password" placeholder="••••••••" value={password}
+            onChange={e => { setPassword(e.target.value); setError(""); }} onKeyDown={e => e.key === "Enter" && handleLogin()} />
         </div>
 
         <button style={{ ...styles.btnPrimary, opacity: loading ? 0.6 : 1 }} onClick={handleLogin} disabled={loading}>
@@ -285,7 +290,7 @@ function LoginPage({ onAlert }) {
         </button>
 
         <div style={{ marginTop: 16, padding: 12, background: "#0f172a", borderRadius: 8, fontSize: 11, color: "#475569" }}>
-          Admin : Email: sareyrathsoun@gmail.com, Password: admin123456789
+          Admin បង្កើត account សម្រាប់គ្រូបង្រៀនទាំងអស់ — គ្រូមិនអាចចុះឈ្មោះខ្លួនឯងបានទេ។
         </div>
       </div>
     </div>
