@@ -1,15 +1,15 @@
 {
   "files": {
     "main.css": "/BOSS/static/css/main.e6c13ad2.css",
-    "main.js": "/BOSS/static/js/main.a6b6ce74.js",
+    "main.js": "/BOSS/static/js/main.e77b0635.js",
     "static/js/453.5f10e3b4.chunk.js": "/BOSS/static/js/453.5f10e3b4.chunk.js",
     "index.html": "/BOSS/index.html",
     "main.e6c13ad2.css.map": "/BOSS/static/css/main.e6c13ad2.css.map",
-    "main.a6b6ce74.js.map": "/BOSS/static/js/main.a6b6ce74.js.map",
+    "main.e77b0635.js.map": "/BOSS/static/js/main.e77b0635.js.map",
     "453.5f10e3b4.chunk.js.map": "/BOSS/static/js/453.5f10e3b4.chunk.js.map"
   },
   "entrypoints": [
     "static/css/main.e6c13ad2.css",
-    "static/js/main.a6b6ce74.js"
+    "static/js/main.e77b0635.js"
   ]
 }
