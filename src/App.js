@@ -290,7 +290,7 @@ function LoginPage({ onAlert }) {
         </button>
 
         <div style={{ marginTop: 16, padding: 12, background: "#0f172a", borderRadius: 8, fontSize: 11, color: "#475569" }}>
-          Admin បង្កើត account សម្រាប់គ្រូបង្រៀនទាំងអស់ — គ្រូមិនអាចចុះឈ្មោះខ្លួនឯងបានទេ។
+          Admin : Email: sareyrathsoun@gmail.com, Password: admin123456789
         </div>
       </div>
     </div>
