@@ -1,54 +1,66 @@
 import { useState, useEffect, useCallback } from "react";
-import { db } from "./firebase";
-import { 
-  collection, 
-  getDocs, 
-  addDoc, 
-  doc, 
-  writeBatch, 
-  serverTimestamp, 
-  query, 
-  where 
+import { initializeApp, deleteApp } from "firebase/app";
+import {
+  getAuth,
+  onAuthStateChanged,
+  signInWithEmailAndPassword,
+  signOut,
+  createUserWithEmailAndPassword,
+} from "firebase/auth";
+import {
+  collection,
+  doc,
+  getDoc,
+  getDocs,
+  addDoc,
+  setDoc,
+  deleteDoc,
+  query,
+  where,
+  writeBatch,
+  serverTimestamp,
 } from "firebase/firestore";
+import { auth, db, firebaseConfig } from "./firebase";
 
-// ─── MOCK DATA ────────────────────────────────────────────────
-const MOCK_USERS = {
-  admin1: { uid: "admin1", name: "លោក សុខ ដារ៉ា", role: "admin", email: "admin@school.edu.kh" },
-  teacher1: { uid: "teacher1", name: "លោកគ្រូ ចាន់ សុភា", role: "teacher", subject: "គណិតវិទ្យា", classId: "class1", age: 35, gender: "ប្រុស" },
-  teacher2: { uid: "teacher2", name: "លោកគ្រូ រ៉ែម សុខលី", role: "teacher", subject: "រូបវិទ្យា", classId: "class2", age: 30, gender: "ស្រី" },
-  teacher3: { uid: "teacher3", name: "លោកគ្រូ ហេង វុទ្ធី", role: "teacher", subject: "ជីវវិទ្យា", classId: "class1", age: 40, gender: "ប្រុស" },
-};
-
-const MOCK_CLASSES = {
-  class1: { id: "class1", name: "ថ្នាក់ទី ១២A" },
-  class2: { id: "class2", name: "ថ្នាក់ទី ១១B" },
-};
-
-const MOCK_STUDENTS = {
-  s1: { id: "s1", name: "គង់ សុភ័ក្ត្រ", age: 17, gender: "ប្រុស", classId: "class1" },
-  s2: { id: "s2", name: "លី ច័ន្ទតារា", age: 16, gender: "ស្រី", classId: "class1" },
-  s3: { id: "s3", name: "ហោ វណ្ណៈ", age: 17, gender: "ប្រុស", classId: "class1" },
-  s4: { id: "s4", name: "ផន សុភារ័ត្ន", age: 16, gender: "ស្រី", classId: "class1" },
-  s5: { id: "s5", name: "ទូច មករា", age: 17, gender: "ប្រុស", classId: "class2" },
-  s6: { id: "s6", name: "ស្រីពេជ្រ", age: 16, gender: "ស្រី", classId: "class2" },
-};
-
-const today = new Date().toISOString().split("T")[0];
-const MOCK_SCHEDULES = [
-  { id: "sch1", teacherId: "teacher1", classId: "class1", date: today, startTime: "07:30", endTime: "09:00" },
-  { id: "sch2", teacherId: "teacher2", classId: "class2", date: today, startTime: "09:00", endTime: "10:30" },
-  { id: "sch3", teacherId: "teacher3", classId: "class1", date: today, startTime: "10:30", endTime: "12:00" },
-];
-
-// ─── ATTENDANCE STATUS CONFIG ─────────────────────────────────
+// ─── STATUS CONFIG ─────────────────────────────────────────────
 const STATUS_CONFIG = {
-  A:  { label: "A",  full: "Absent",     color: "#ef4444", bg: "#fef2f2", border: "#fca5a5" },
-  P:  { label: "P",  full: "Present",    color: "#22c55e", bg: "#f0fdf4", border: "#86efac" },
+  A: { label: "A", full: "Absent", color: "#ef4444", bg: "#fef2f2", border: "#fca5a5" },
+  P: { label: "P", full: "Present", color: "#22c55e", bg: "#f0fdf4", border: "#86efac" },
   Pe: { label: "Pe", full: "Permission", color: "#3b82f6", bg: "#eff6ff", border: "#93c5fd" },
-  L:  { label: "L",  full: "Late",       color: "#eab308", bg: "#fefce8", border: "#fde047" },
+  L: { label: "L", full: "Late", color: "#eab308", bg: "#fefce8", border: "#fde047" },
 };
 
-// ─── STYLES ────────────────────────────────────────────────────
+// Class names are now free-text (Admin types anything). Any new class
+// name typed gets saved to the "classes" Firestore collection so it
+// appears as a suggestion (datalist) next time.
+const DEFAULT_CLASS = "";
+
+const todayStr = () => new Date().toISOString().split("T")[0];
+const nowTimeStr = () => new Date().toTimeString().slice(0, 5);
+
+// Fetch known class names from Firestore (for datalist suggestions)
+function useClassSuggestions() {
+  const [classNames, setClassNames] = useState([]);
+  const refresh = useCallback(async () => {
+    const snap = await getDocs(collection(db, "classes"));
+    setClassNames(snap.docs.map(d => d.data().name).filter(Boolean));
+  }, []);
+  useEffect(() => { refresh(); }, [refresh]);
+  return [classNames, refresh];
+}
+
+// If a typed class name isn't in Firestore yet, save it so it becomes
+// a suggestion for next time (Admin can freely type new class names).
+async function ensureClassExists(name) {
+  if (!name || !name.trim()) return;
+  const trimmed = name.trim();
+  const existing = await getDocs(query(collection(db, "classes"), where("name", "==", trimmed)));
+  if (existing.empty) {
+    await addDoc(collection(db, "classes"), { name: trimmed, createdAt: serverTimestamp() });
+  }
+}
+
+// ─── STYLES ─────────────────────────────────────────────────────
 const styles = {
   app: { fontFamily: "'Hanuman', 'Khmer OS', 'Battambang', sans-serif", minHeight: "100vh", background: "#0f172a", color: "#e2e8f0" },
   loginWrap: { display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh", background: "linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #0f172a 100%)" },
@@ -86,39 +98,70 @@ const styles = {
     boxShadow: selected ? `0 0 10px ${STATUS_CONFIG[status].color}50` : "none",
   }),
   tag: (role) => {
-    const map = { admin: ["#a78bfa", "#2e1065"], teacher: ["#34d399", "#064e3b"], viewer: ["#60a5fa", "#1e3a5f"] };
+    const map = { admin: ["#a78bfa", "#2e1065"], teacher: ["#34d399", "#064e3b"] };
     const [c, bg] = map[role] || ["#94a3b8", "#1e293b"];
     return { padding: "2px 8px", borderRadius: 20, fontSize: 11, fontWeight: 600, color: c, background: bg };
   },
   modal: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100 },
-  modalCard: { background: "#1e293b", border: "1px solid #334155", borderRadius: 16, padding: 28, width: 420, maxWidth: "90vw" },
+  modalCard: { background: "#1e293b", border: "1px solid #334155", borderRadius: 16, padding: 28, width: 420, maxWidth: "90vw", maxHeight: "85vh", overflowY: "auto" },
   select: { background: "#0f172a", border: "1px solid #334155", borderRadius: 8, padding: "8px 12px", color: "#e2e8f0", fontSize: 13, width: "100%", outline: "none" },
   btnSm: (color) => ({ background: color, color: "#fff", border: "none", borderRadius: 6, padding: "6px 14px", fontSize: 12, fontWeight: 600, cursor: "pointer" }),
   alert: (type) => ({ background: type === "success" ? "#052e16" : "#450a0a", border: `1px solid ${type === "success" ? "#16a34a" : "#dc2626"}`, borderRadius: 8, padding: "10px 16px", fontSize: 13, color: type === "success" ? "#86efac" : "#fca5a5", marginBottom: 12 }),
+  label: { fontSize: 12, color: "#94a3b8", display: "block", marginBottom: 4 },
+  spinner: { textAlign: "center", padding: 60, color: "#64748b" },
 };
 
-// ─── MAIN APP ─────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+// MAIN APP
+// ═══════════════════════════════════════════════════════════════
 export default function App() {
+  const [authLoading, setAuthLoading] = useState(true);
   const [user, setUser] = useState(null);
   const [page, setPage] = useState("dashboard");
-  const [attendance, setAttendance] = useState({});
   const [alert, setAlert] = useState(null);
-  const [showAddUser, setShowAddUser] = useState(false);
-  const [showAddStudent, setShowAddStudent] = useState(false);
 
   const showAlert = (msg, type = "success") => {
     setAlert({ msg, type });
-    setTimeout(() => setAlert(null), 3000);
+    setTimeout(() => setAlert(null), 3500);
   };
 
-  const login = (uid) => {
-    setUser(MOCK_USERS[uid]);
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, async (fbUser) => {
+      if (!fbUser) {
+        setUser(null);
+        setAuthLoading(false);
+        return;
+      }
+      try {
+        const snap = await getDoc(doc(db, "users", fbUser.uid));
+        if (!snap.exists()) {
+          showAlert("គណនីនេះមិនមានទិន្នន័យក្នុងប្រព័ន្ធ — សូមទាក់ទង Admin", "error");
+          await signOut(auth);
+          setUser(null);
+        } else {
+          setUser({ uid: fbUser.uid, email: fbUser.email, ...snap.data() });
+        }
+      } catch (err) {
+        showAlert("មានបញ្ហាក្នុងការទាញទិន្នន័យអ្នកប្រើ: " + err.message, "error");
+      }
+      setAuthLoading(false);
+    });
+    return () => unsub();
+  }, []);
+
+  const logout = async () => {
+    await signOut(auth);
+    setUser(null);
     setPage("dashboard");
   };
 
-  const logout = () => { setUser(null); setPage("dashboard"); };
+  if (authLoading) {
+    return <div style={{ ...styles.app, display: "flex", alignItems: "center", justifyContent: "center" }}>
+      <div style={styles.spinner}>⏳ កំពុងផ្ទុក...</div>
+    </div>;
+  }
 
-  if (!user) return <LoginPage onLogin={login} />;
+  if (!user) return <LoginPage onAlert={showAlert} />;
 
   const navItems = user.role === "admin"
     ? [
@@ -135,7 +178,6 @@ export default function App() {
 
   return (
     <div style={{ ...styles.app, display: "flex" }}>
-      {/* SIDEBAR */}
       <div style={styles.sidebar}>
         <div style={styles.sidebarLogo}>
           <p style={styles.sidebarTitle}>🏫 School Attend</p>
@@ -150,12 +192,12 @@ export default function App() {
         </div>
         <div style={{ padding: 16, borderTop: "1px solid #334155" }}>
           <div style={{ fontSize: 12, color: "#64748b", marginBottom: 2 }}>{user.name}</div>
+          <div style={{ fontSize: 11, color: "#475569", marginBottom: 6 }}>{user.email}</div>
           <div style={styles.tag(user.role)}>{user.role === "admin" ? "អ្នកគ្រប់គ្រង" : "គ្រូបង្រៀន"}</div>
           <button onClick={logout} style={{ ...styles.btnSm("#ef4444"), marginTop: 10, width: "100%" }}>ចាកចេញ</button>
         </div>
       </div>
 
-      {/* MAIN */}
       <div style={styles.main}>
         <div style={styles.topbar}>
           <h1 style={styles.pageTitle}>
@@ -166,75 +208,126 @@ export default function App() {
         <div style={styles.content}>
           {alert && <div style={styles.alert(alert.type)}>{alert.type === "success" ? "✅" : "❌"} {alert.msg}</div>}
 
-          {page === "dashboard" && <Dashboard user={user} attendance={attendance} />}
-          {page === "teachers" && user.role === "admin" && <TeachersPage onAlert={showAlert} showAdd={showAddUser} setShowAdd={setShowAddUser} />}
-          {page === "students" && user.role === "admin" && <StudentsPage onAlert={showAlert} showAdd={showAddStudent} setShowAdd={setShowAddStudent} />}
-          {page === "schedules" && user.role === "admin" && <SchedulesPage onAlert={showAlert} />}
-          {page === "reports" && user.role === "admin" && <ReportsPage attendance={attendance} />}
-          {page === "take_attendance" && user.role === "teacher" && (
-            <TakeAttendancePage user={user} attendance={attendance} setAttendance={setAttendance} onAlert={showAlert} />
-          )}
+          {page === "dashboard" && <Dashboard user={user} />}
+          {page === "teachers" && user.role === "admin" && <TeachersPage onAlert={showAlert} />}
+          {page === "students" && user.role === "admin" && <StudentsPage onAlert={showAlert} />}
+          {page === "schedules" && user.role === "admin" && <SchedulesPage />}
+          {page === "reports" && user.role === "admin" && <ReportsPage />}
+          {page === "take_attendance" && user.role === "teacher" && <TakeAttendancePage user={user} onAlert={showAlert} />}
         </div>
       </div>
     </div>
   );
 }
 
-// ─── LOGIN PAGE ───────────────────────────────────────────────
-function LoginPage({ onLogin }) {
-  const [selected, setSelected] = useState("");
-  const users = [
-    { uid: "admin1", label: "👑 Admin — លោក សុខ ដារ៉ា" },
-    { uid: "teacher1", label: "👨‍🏫 គ្រូ ចាន់ សុភា (គណិតវិទ្យា)" },
-    { uid: "teacher2", label: "👩‍🏫 គ្រូ រ៉ែម សុខលី (រូបវិទ្យា)" },
-  ];
+// ═══════════════════════════════════════════════════════════════
+// LOGIN PAGE — real Firebase Auth (email + password)
+// ═══════════════════════════════════════════════════════════════
+function LoginPage({ onAlert }) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const handleLogin = async () => {
+    if (!email || !password) { onAlert("សូមបញ្ចូល Email និង Password", "error"); return; }
+    setLoading(true);
+    try {
+      await signInWithEmailAndPassword(auth, email, password);
+    } catch (err) {
+      const msg = ["auth/invalid-credential", "auth/wrong-password", "auth/user-not-found"].includes(err.code)
+        ? "Email ឬ Password មិនត្រឹមត្រូវ"
+        : err.message;
+      onAlert(msg, "error");
+    }
+    setLoading(false);
+  };
+
   return (
     <div style={styles.loginWrap}>
       <div style={styles.loginCard}>
-        <div style={{ textAlign: "center", marginBottom: 20 }}>
-          <div style={{ fontSize: 48 }}>🏫</div>
-        </div>
+        <div style={{ textAlign: "center", marginBottom: 20 }}><div style={{ fontSize: 48 }}>🏫</div></div>
         <h2 style={styles.loginTitle}>ប្រព័ន្ធគ្រប់គ្រងអវត្តមាន</h2>
         <p style={styles.loginSub}>School Attendance Management System</p>
-        <div style={{ marginBottom: 16 }}>
-          <label style={{ fontSize: 12, color: "#94a3b8", display: "block", marginBottom: 6 }}>ជ្រើសរើសអ្នកប្រើ (DEMO)</label>
-          <select style={styles.select} value={selected} onChange={e => setSelected(e.target.value)}>
-            <option value="">-- ជ្រើសរើស --</option>
-            {users.map(u => <option key={u.uid} value={u.uid}>{u.label}</option>)}
-          </select>
+
+        <div style={{ marginBottom: 12 }}>
+          <label style={styles.label}>Email</label>
+          <input style={styles.input} type="email" placeholder="you@school.edu.kh" value={email}
+            onChange={e => setEmail(e.target.value)} onKeyDown={e => e.key === "Enter" && handleLogin()} />
         </div>
-        <button style={styles.btnPrimary} onClick={() => selected && onLogin(selected)} disabled={!selected}>
-          ចូលប្រើប្រាស់
+        <div style={{ marginBottom: 20 }}>
+          <label style={styles.label}>Password</label>
+          <input style={styles.input} type="password" placeholder="••••••••" value={password}
+            onChange={e => setPassword(e.target.value)} onKeyDown={e => e.key === "Enter" && handleLogin()} />
+        </div>
+
+        <button style={{ ...styles.btnPrimary, opacity: loading ? 0.6 : 1 }} onClick={handleLogin} disabled={loading}>
+          {loading ? "កំពុងចូល..." : "ចូលប្រើប្រាស់"}
         </button>
+
         <div style={{ marginTop: 16, padding: 12, background: "#0f172a", borderRadius: 8, fontSize: 11, color: "#475569" }}>
-          <strong style={{ color: "#64748b" }}>Firebase Auth:</strong> ក្នុង production, ប្រើ signInWithEmailAndPassword() + role-based Firestore rules
+          Admin បង្កើត account សម្រាប់គ្រូបង្រៀនទាំងអស់ — គ្រូមិនអាចចុះឈ្មោះខ្លួនឯងបានទេ។
         </div>
       </div>
     </div>
   );
 }
 
-// ─── DASHBOARD ────────────────────────────────────────────────
-function Dashboard({ user, attendance }) {
-  const todaySchedules = MOCK_SCHEDULES.filter(s =>
-    user.role === "admin" ? true : s.teacherId === user.uid
-  );
-  const totalStudents = Object.values(MOCK_STUDENTS).filter(s =>
-    user.role === "admin" ? true : s.classId === user.classId
-  ).length;
+// ═══════════════════════════════════════════════════════════════
+// DASHBOARD
+// ═══════════════════════════════════════════════════════════════
+function Dashboard({ user }) {
+  const [loading, setLoading] = useState(true);
+  const [schedules, setSchedules] = useState([]);
+  const [studentCount, setStudentCount] = useState(0);
+  const [attendanceToday, setAttendanceToday] = useState({});
 
-  const submitted = Object.keys(attendance).length;
-  const now = new Date();
-  const timeStr = now.toTimeString().slice(0, 5);
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      setLoading(true);
+      const date = todayStr();
+
+      let schedSnap;
+      if (user.role === "admin") {
+        schedSnap = await getDocs(query(collection(db, "schedules"), where("date", "==", date)));
+      } else {
+        schedSnap = await getDocs(query(collection(db, "schedules"), where("date", "==", date), where("teacherId", "==", user.uid)));
+      }
+      const scheds = schedSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+
+      let studSnap;
+      if (user.role === "admin") studSnap = await getDocs(collection(db, "students"));
+      else studSnap = await getDocs(query(collection(db, "students"), where("className", "==", user.className || "")));
+
+      const submittedMap = {};
+      for (const s of scheds) {
+        const attSnap = await getDocs(query(collection(db, "attendance"), where("scheduleId", "==", s.id), where("date", "==", date)));
+        submittedMap[s.id] = !attSnap.empty;
+      }
+
+      if (active) {
+        setSchedules(scheds);
+        setStudentCount(studSnap.size);
+        setAttendanceToday(submittedMap);
+        setLoading(false);
+      }
+    })();
+    return () => { active = false; };
+  }, [user]);
+
+  if (loading) return <div style={styles.spinner}>⏳ កំពុងផ្ទុកទិន្នន័យ...</div>;
+
+  const timeStr = nowTimeStr();
+  const submittedCount = Object.values(attendanceToday).filter(Boolean).length;
 
   return (
     <div>
       <div style={{ display: "flex", gap: 16, marginBottom: 20 }}>
         {[
-          { val: todaySchedules.length, label: "ម៉ោងរៀនថ្ងៃនេះ", color: "#a78bfa" },
-          { val: totalStudents, label: "សិស្សទាំងអស់", color: "#34d399" },
-          { val: submitted, label: "បានស្រង់ហើយ", color: "#60a5fa" },
-          { val: todaySchedules.length - submitted, label: "មិនទាន់ស្រង់", color: "#f97316" },
+          { val: schedules.length, label: "ម៉ោងរៀនថ្ងៃនេះ", color: "#a78bfa" },
+          { val: studentCount, label: "សិស្សទាំងអស់", color: "#34d399" },
+          { val: submittedCount, label: "បានស្រង់ហើយ", color: "#60a5fa" },
+          { val: schedules.length - submittedCount, label: "មិនទាន់ស្រង់", color: "#f97316" },
         ].map((s, i) => (
           <div key={i} style={styles.statCard(s.color)}>
             <div style={styles.statVal(s.color)}>{s.val}</div>
@@ -245,38 +338,34 @@ function Dashboard({ user, attendance }) {
 
       <div style={styles.card}>
         <div style={styles.cardTitle}>📅 ម៉ោងបង្រៀនថ្ងៃនេះ</div>
-        <table style={styles.table}>
-          <thead>
-            <tr>
-              {["គ្រូ", "ថ្នាក់", "ម៉ោង", "ស្ថានភាព"].map(h => <th key={h} style={styles.th}>{h}</th>)}
-            </tr>
-          </thead>
-          <tbody>
-            {todaySchedules.map(sch => {
-              const teacher = MOCK_USERS[sch.teacherId];
-              const cls = MOCK_CLASSES[sch.classId];
-              const isActive = timeStr >= sch.startTime && timeStr <= sch.endTime;
-              const isPast = timeStr > sch.endTime;
-              const hasSubmitted = attendance[sch.id];
-              return (
-                <tr key={sch.id}>
-                  <td style={styles.td}>{teacher?.name}</td>
-                  <td style={styles.td}>{cls?.name}</td>
-                  <td style={styles.td}>{sch.startTime} – {sch.endTime}</td>
-                  <td style={styles.td}>
-                    {hasSubmitted
-                      ? <span style={styles.badge("#22c55e", "#052e16")}>✅ បានស្រង់</span>
-                      : isActive
-                        ? <span style={styles.badge("#eab308", "#422006")}>🟡 ចំម៉ោងបង្រៀន</span>
-                        : isPast
-                          ? <span style={styles.badge("#ef4444", "#450a0a")}>🔴 លើសម៉ោង / A</span>
-                          : <span style={styles.badge("#64748b", "#0f172a")}>⏳ មិនទាន់ដល់ម៉ោង</span>}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+        {schedules.length === 0
+          ? <div style={{ color: "#475569", fontSize: 13, textAlign: "center", padding: 20 }}>📭 មិនមានម៉ោងរៀនកំណត់សម្រាប់ថ្ងៃនេះ</div>
+          : <table style={styles.table}>
+              <thead><tr>{["គ្រូ", "ថ្នាក់", "ម៉ោង", "ស្ថានភាព"].map(h => <th key={h} style={styles.th}>{h}</th>)}</tr></thead>
+              <tbody>
+                {schedules.map(sch => {
+                  const isActive = timeStr >= sch.startTime && timeStr <= sch.endTime;
+                  const isPast = timeStr > sch.endTime;
+                  const submitted = attendanceToday[sch.id];
+                  return (
+                    <tr key={sch.id}>
+                      <td style={styles.td}>{sch.teacherName || "—"}</td>
+                      <td style={styles.td}>{sch.className || "—"}</td>
+                      <td style={styles.td}>{sch.startTime} – {sch.endTime}</td>
+                      <td style={styles.td}>
+                        {submitted
+                          ? <span style={styles.badge("#22c55e", "#052e16")}>✅ បានស្រង់</span>
+                          : isActive
+                            ? <span style={styles.badge("#eab308", "#422006")}>🟡 ចំម៉ោងបង្រៀន</span>
+                            : isPast
+                              ? <span style={styles.badge("#ef4444", "#450a0a")}>🔴 លើសម៉ោង</span>
+                              : <span style={styles.badge("#64748b", "#0f172a")}>⏳ មិនទាន់ដល់ម៉ោង</span>}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>}
       </div>
 
       <div style={styles.card}>
@@ -294,20 +383,104 @@ function Dashboard({ user, attendance }) {
   );
 }
 
-// ─── TEACHERS PAGE ────────────────────────────────────────────
-function TeachersPage({ onAlert, showAdd, setShowAdd }) {
-  const [teachers, setTeachers] = useState(
-    Object.values(MOCK_USERS).filter(u => u.role === "teacher")
-  );
-  const [form, setForm] = useState({ name: "", age: "", gender: "ប្រុស", subject: "", classId: "class1" });
+// ═══════════════════════════════════════════════════════════════
+// TEACHERS PAGE — Admin creates teacher LOGIN (email+password)
+// via a SECONDARY Firebase app so Admin's own session survives.
+// ═══════════════════════════════════════════════════════════════
+function TeachersPage({ onAlert }) {
+  const [teachers, setTeachers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [showAdd, setShowAdd] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [classNames, refreshClasses] = useClassSuggestions();
+  const [form, setForm] = useState({
+    name: "", age: "", gender: "ប្រុស", subject: "",
+    className: DEFAULT_CLASS, startTime: "07:30", endTime: "09:00",
+    email: "", password: "",
+  });
 
-  const addTeacher = () => {
-    if (!form.name || !form.subject) { onAlert("សូមបំពេញព័ត៌មានឱ្យបានគ្រប់!", "error"); return; }
-    const newT = { uid: "t" + Date.now(), role: "teacher", ...form };
-    setTeachers([...teachers, newT]);
-    setShowAdd(false);
-    setForm({ name: "", age: "", gender: "ប្រុស", subject: "", classId: "class1" });
-    onAlert("បានបន្ថែមគ្រូជោគជ័យ! (Firebase: addDoc collection 'users'))");
+  const loadTeachers = useCallback(async () => {
+    setLoading(true);
+    const snap = await getDocs(query(collection(db, "users"), where("role", "==", "teacher")));
+    setTeachers(snap.docs.map(d => ({ uid: d.id, ...d.data() })));
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { loadTeachers(); }, [loadTeachers]);
+
+  const addTeacher = async () => {
+    if (!form.name || !form.subject || !form.className.trim() || !form.email || !form.password) {
+      onAlert("សូមបំពេញព័ត៌មានឱ្យបានគ្រប់ (រួមទាំងឈ្មោះថ្នាក់ Email/Password)", "error");
+      return;
+    }
+    if (form.password.length < 6) {
+      onAlert("Password ត្រូវមានយ៉ាងតិច 6 តួអក្សរ", "error");
+      return;
+    }
+    setSaving(true);
+
+    const secondaryApp = initializeApp(firebaseConfig, "SecondaryTeacherCreate_" + Date.now());
+    const secondaryAuth = getAuth(secondaryApp);
+
+    try {
+      const cred = await createUserWithEmailAndPassword(secondaryAuth, form.email, form.password);
+      const uid = cred.user.uid;
+      const className = form.className.trim();
+
+      await setDoc(doc(db, "users", uid), {
+        name: form.name,
+        age: Number(form.age) || null,
+        gender: form.gender,
+        subject: form.subject,
+        className,
+        startTime: form.startTime,
+        endTime: form.endTime,
+        role: "teacher",
+        email: form.email,
+        createdAt: serverTimestamp(),
+      });
+
+      await addDoc(collection(db, "schedules"), {
+        teacherId: uid,
+        teacherName: form.name,
+        className,
+        date: todayStr(),
+        startTime: form.startTime,
+        endTime: form.endTime,
+      });
+
+      await ensureClassExists(className);
+      refreshClasses();
+
+      onAlert(`បានបង្កើតគណនីគ្រូ "${form.name}" ជោគជ័យ! (Email: ${form.email})`);
+      setShowAdd(false);
+      setForm({ name: "", age: "", gender: "ប្រុស", subject: "", className: DEFAULT_CLASS, startTime: "07:30", endTime: "09:00", email: "", password: "" });
+      loadTeachers();
+    } catch (err) {
+      const msg = err.code === "auth/email-already-in-use" ? "Email នេះមានគណនីរួចហើយ" : err.message;
+      onAlert(msg, "error");
+    } finally {
+      await deleteApp(secondaryApp);
+      setSaving(false);
+    }
+  };
+
+  const deleteTeacher = async (t) => {
+    if (!window.confirm(`តើអ្នកប្រាកដថាចង់លុបគ្រូ "${t.name}" មែនទេ?`)) return;
+    try {
+      // Removes the Firestore profile + any schedules tied to this teacher.
+      // NOTE: this does NOT delete their Firebase Auth login — a client app
+      // can only delete the currently-signed-in user's own auth account,
+      // not someone else's. Deleting another user's login needs the Admin
+      // SDK (Cloud Function) or manual removal in Firebase Console.
+      await deleteDoc(doc(db, "users", t.uid));
+      const schedSnap = await getDocs(query(collection(db, "schedules"), where("teacherId", "==", t.uid)));
+      await Promise.all(schedSnap.docs.map(d => deleteDoc(doc(db, "schedules", d.id))));
+      onAlert(`បានលុបគ្រូ "${t.name}" ចេញពីទិន្នន័យ។ គណនី Login នៅតែមាន — លុបវាដាច់ដោយឡែកនៅ Firebase Console > Authentication ប្រសិនបើត្រូវការ។`);
+      loadTeachers();
+    } catch (err) {
+      onAlert(err.message, "error");
+    }
   };
 
   return (
@@ -317,54 +490,85 @@ function TeachersPage({ onAlert, showAdd, setShowAdd }) {
       </div>
       <div style={styles.card}>
         <div style={styles.cardTitle}>👨‍🏫 បញ្ជីគ្រូបង្រៀន</div>
-        <table style={styles.table}>
-          <thead>
-            <tr>{["ឈ្មោះ", "ភេទ", "អាយុ", "មុខវិជ្ជា", "ថ្នាក់", "ស្ថានភាព"].map(h => <th key={h} style={styles.th}>{h}</th>)}</tr>
-          </thead>
-          <tbody>
-            {teachers.map(t => (
-              <tr key={t.uid}>
-                <td style={styles.td}><strong style={{ color: "#f1f5f9" }}>{t.name}</strong></td>
-                <td style={styles.td}>{t.gender}</td>
-                <td style={styles.td}>{t.age} ឆ្នាំ</td>
-                <td style={styles.td}><span style={styles.badge("#a78bfa", "#1e1b4b")}>{t.subject}</span></td>
-                <td style={styles.td}>{MOCK_CLASSES[t.classId]?.name || "—"}</td>
-                <td style={styles.td}><span style={styles.badge("#34d399", "#052e16")}>✓ សកម្ម</span></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        {loading ? <div style={styles.spinner}>⏳ កំពុងផ្ទុក...</div> : (
+          <table style={styles.table}>
+            <thead><tr>{["ឈ្មោះ", "Email", "មុខវិជ្ជា", "ថ្នាក់", "ម៉ោងបង្រៀន", ""].map(h => <th key={h} style={styles.th}>{h}</th>)}</tr></thead>
+            <tbody>
+              {teachers.map(t => (
+                <tr key={t.uid}>
+                  <td style={styles.td}><strong style={{ color: "#f1f5f9" }}>{t.name}</strong></td>
+                  <td style={{ ...styles.td, color: "#64748b" }}>{t.email}</td>
+                  <td style={styles.td}><span style={styles.badge("#a78bfa", "#1e1b4b")}>{t.subject}</span></td>
+                  <td style={styles.td}>{t.className || "—"}</td>
+                  <td style={styles.td}>{t.startTime} – {t.endTime}</td>
+                  <td style={styles.td}><button style={styles.btnSm("#ef4444")} onClick={() => deleteTeacher(t)}>លុប</button></td>
+                </tr>
+              ))}
+              {teachers.length === 0 && (
+                <tr><td colSpan={6} style={{ ...styles.td, textAlign: "center", color: "#475569" }}>📭 មិនទាន់មានគ្រូ</td></tr>
+              )}
+            </tbody>
+          </table>
+        )}
       </div>
 
       {showAdd && (
         <div style={styles.modal}>
           <div style={styles.modalCard}>
             <h3 style={{ color: "#f1f5f9", marginBottom: 16, fontSize: 16 }}>➕ បន្ថែមគ្រូថ្មី</h3>
-            {[
-              { label: "ឈ្មោះ", key: "name", ph: "ឈ្មោះគ្រូ" },
-              { label: "អាយុ", key: "age", ph: "អាយុ" },
-              { label: "មុខវិជ្ជា", key: "subject", ph: "មុខវិជ្ជា" },
-            ].map(f => (
-              <div key={f.key} style={{ marginBottom: 12 }}>
-                <label style={{ fontSize: 12, color: "#94a3b8", display: "block", marginBottom: 4 }}>{f.label}</label>
-                <input style={styles.input} placeholder={f.ph} value={form[f.key]} onChange={e => setForm({ ...form, [f.key]: e.target.value })} />
-              </div>
-            ))}
+
             <div style={{ marginBottom: 12 }}>
-              <label style={{ fontSize: 12, color: "#94a3b8", display: "block", marginBottom: 4 }}>ភេទ</label>
-              <select style={styles.select} value={form.gender} onChange={e => setForm({ ...form, gender: e.target.value })}>
-                <option>ប្រុស</option><option>ស្រី</option>
-              </select>
+              <label style={styles.label}>ឈ្មោះ</label>
+              <input style={styles.input} value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} />
+            </div>
+            <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+              <div style={{ flex: 1 }}>
+                <label style={styles.label}>អាយុ</label>
+                <input style={styles.input} value={form.age} onChange={e => setForm({ ...form, age: e.target.value })} />
+              </div>
+              <div style={{ flex: 1 }}>
+                <label style={styles.label}>ភេទ</label>
+                <select style={styles.select} value={form.gender} onChange={e => setForm({ ...form, gender: e.target.value })}>
+                  <option>ប្រុស</option><option>ស្រី</option>
+                </select>
+              </div>
+            </div>
+            <div style={{ marginBottom: 12 }}>
+              <label style={styles.label}>មុខវិជ្ជា</label>
+              <input style={styles.input} value={form.subject} onChange={e => setForm({ ...form, subject: e.target.value })} />
+            </div>
+            <div style={{ marginBottom: 12 }}>
+              <label style={styles.label}>ថ្នាក់ដែលបង្រៀន</label>
+              <input style={styles.input} list="class-suggestions-teacher" placeholder="ឧទាហរណ៍: 300 or A4, 402"
+                value={form.className} onChange={e => setForm({ ...form, className: e.target.value })} />
+              <datalist id="class-suggestions-teacher">
+                {classNames.map(c => <option key={c} value={c} />)}
+              </datalist>
+            </div>
+            <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+              <div style={{ flex: 1 }}>
+                <label style={styles.label}>ម៉ោងចាប់ផ្តើម</label>
+                <input style={styles.input} type="time" value={form.startTime} onChange={e => setForm({ ...form, startTime: e.target.value })} />
+              </div>
+              <div style={{ flex: 1 }}>
+                <label style={styles.label}>ម៉ោងបញ្ចប់</label>
+                <input style={styles.input} type="time" value={form.endTime} onChange={e => setForm({ ...form, endTime: e.target.value })} />
+              </div>
+            </div>
+            <div style={{ marginBottom: 12, paddingTop: 8, borderTop: "1px solid #334155" }}>
+              <label style={styles.label}>Email (សម្រាប់ចូលប្រើប្រាស់)</label>
+              <input style={styles.input} type="email" value={form.email} onChange={e => setForm({ ...form, email: e.target.value })} />
             </div>
             <div style={{ marginBottom: 16 }}>
-              <label style={{ fontSize: 12, color: "#94a3b8", display: "block", marginBottom: 4 }}>ថ្នាក់</label>
-              <select style={styles.select} value={form.classId} onChange={e => setForm({ ...form, classId: e.target.value })}>
-                {Object.values(MOCK_CLASSES).map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-              </select>
+              <label style={styles.label}>Password (យ៉ាងតិច 6 តួអក្សរ)</label>
+              <input style={styles.input} type="password" value={form.password} onChange={e => setForm({ ...form, password: e.target.value })} />
             </div>
+
             <div style={{ display: "flex", gap: 8 }}>
-              <button style={{ ...styles.btnSm("#6366f1"), flex: 1, padding: "10px" }} onClick={addTeacher}>រក្សាទុក</button>
-              <button style={{ ...styles.btnSm("#475569"), flex: 1, padding: "10px" }} onClick={() => setShowAdd(false)}>បោះបង់</button>
+              <button style={{ ...styles.btnSm("#6366f1"), flex: 1, padding: "10px", opacity: saving ? 0.6 : 1 }} onClick={addTeacher} disabled={saving}>
+                {saving ? "កំពុងរក្សាទុក..." : "រក្សាទុក"}
+              </button>
+              <button style={{ ...styles.btnSm("#475569"), flex: 1, padding: "10px" }} onClick={() => setShowAdd(false)} disabled={saving}>បោះបង់</button>
             </div>
           </div>
         </div>
@@ -373,20 +577,62 @@ function TeachersPage({ onAlert, showAdd, setShowAdd }) {
   );
 }
 
-// ─── STUDENTS PAGE ────────────────────────────────────────────
-function StudentsPage({ onAlert, showAdd, setShowAdd }) {
-  const [students, setStudents] = useState(Object.values(MOCK_STUDENTS));
+// ═══════════════════════════════════════════════════════════════
+// STUDENTS PAGE
+// ═══════════════════════════════════════════════════════════════
+function StudentsPage({ onAlert }) {
+  const [students, setStudents] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [filterClass, setFilterClass] = useState("all");
-  const [form, setForm] = useState({ name: "", age: "", gender: "ប្រុស", classId: "class1" });
+  const [showAdd, setShowAdd] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [classNames, refreshClasses] = useClassSuggestions();
+  const [form, setForm] = useState({ name: "", age: "", gender: "ប្រុស", className: DEFAULT_CLASS });
 
-  const filtered = filterClass === "all" ? students : students.filter(s => s.classId === filterClass);
+  const loadStudents = useCallback(async () => {
+    setLoading(true);
+    const snap = await getDocs(collection(db, "students"));
+    setStudents(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    setLoading(false);
+  }, []);
 
-  const addStudent = () => {
-    if (!form.name) { onAlert("សូមបំពេញឈ្មោះ!", "error"); return; }
-    setStudents([...students, { id: "s" + Date.now(), ...form }]);
-    setShowAdd(false);
-    setForm({ name: "", age: "", gender: "ប្រុស", classId: "class1" });
-    onAlert("បានបន្ថែមសិស្សជោគជ័យ!");
+  useEffect(() => { loadStudents(); }, [loadStudents]);
+
+  const filtered = filterClass === "all" ? students : students.filter(s => s.className === filterClass);
+
+  const deleteStudent = async (s) => {
+    if (!window.confirm(`តើអ្នកប្រាកដថាចង់លុបសិស្ស "${s.name}" មែនទេ?`)) return;
+    try {
+      await deleteDoc(doc(db, "students", s.id));
+      onAlert(`បានលុបសិស្ស "${s.name}" ចេញ`);
+      loadStudents();
+    } catch (err) {
+      onAlert(err.message, "error");
+    }
+  };
+
+  const addStudent = async () => {
+    if (!form.name || !form.className.trim()) { onAlert("សូមបំពេញឈ្មោះ និងឈ្មោះថ្នាក់!", "error"); return; }
+    setSaving(true);
+    try {
+      const className = form.className.trim();
+      await addDoc(collection(db, "students"), {
+        name: form.name,
+        age: Number(form.age) || null,
+        gender: form.gender,
+        className,
+        createdAt: serverTimestamp(),
+      });
+      await ensureClassExists(className);
+      refreshClasses();
+      onAlert("បានបន្ថែមសិស្សជោគជ័យ!");
+      setShowAdd(false);
+      setForm({ name: "", age: "", gender: "ប្រុស", className: DEFAULT_CLASS });
+      loadStudents();
+    } catch (err) {
+      onAlert(err.message, "error");
+    }
+    setSaving(false);
   };
 
   return (
@@ -394,55 +640,65 @@ function StudentsPage({ onAlert, showAdd, setShowAdd }) {
       <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 16, alignItems: "center" }}>
         <select style={{ ...styles.select, width: 180 }} value={filterClass} onChange={e => setFilterClass(e.target.value)}>
           <option value="all">ថ្នាក់ទាំងអស់</option>
-          {Object.values(MOCK_CLASSES).map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+          {classNames.map(c => <option key={c} value={c}>{c}</option>)}
         </select>
         <button style={styles.btnSm("#6366f1")} onClick={() => setShowAdd(true)}>+ បន្ថែមសិស្ស</button>
       </div>
       <div style={styles.card}>
         <div style={styles.cardTitle}>👨‍🎓 បញ្ជីសិស្ស ({filtered.length} នាក់)</div>
-        <table style={styles.table}>
-          <thead>
-            <tr>{["#", "ឈ្មោះ", "ភេទ", "អាយុ", "ថ្នាក់"].map(h => <th key={h} style={styles.th}>{h}</th>)}</tr>
-          </thead>
-          <tbody>
-            {filtered.map((s, i) => (
-              <tr key={s.id}>
-                <td style={{ ...styles.td, color: "#475569" }}>{i + 1}</td>
-                <td style={styles.td}><strong style={{ color: "#f1f5f9" }}>{s.name}</strong></td>
-                <td style={styles.td}>{s.gender}</td>
-                <td style={styles.td}>{s.age} ឆ្នាំ</td>
-                <td style={styles.td}><span style={styles.badge("#60a5fa", "#1e3a5f")}>{MOCK_CLASSES[s.classId]?.name}</span></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        {loading ? <div style={styles.spinner}>⏳ កំពុងផ្ទុក...</div> : (
+          <table style={styles.table}>
+            <thead><tr>{["#", "ឈ្មោះ", "ភេទ", "អាយុ", "ថ្នាក់", ""].map(h => <th key={h} style={styles.th}>{h}</th>)}</tr></thead>
+            <tbody>
+              {filtered.map((s, i) => (
+                <tr key={s.id}>
+                  <td style={{ ...styles.td, color: "#475569" }}>{i + 1}</td>
+                  <td style={styles.td}><strong style={{ color: "#f1f5f9" }}>{s.name}</strong></td>
+                  <td style={styles.td}>{s.gender}</td>
+                  <td style={styles.td}>{s.age ? `${s.age} ឆ្នាំ` : "—"}</td>
+                  <td style={styles.td}><span style={styles.badge("#60a5fa", "#1e3a5f")}>{s.className}</span></td>
+                  <td style={styles.td}><button style={styles.btnSm("#ef4444")} onClick={() => deleteStudent(s)}>លុប</button></td>
+                </tr>
+              ))}
+              {filtered.length === 0 && (
+                <tr><td colSpan={6} style={{ ...styles.td, textAlign: "center", color: "#475569" }}>📭 មិនទាន់មានសិស្ស</td></tr>
+              )}
+            </tbody>
+          </table>
+        )}
       </div>
 
       {showAdd && (
         <div style={styles.modal}>
           <div style={styles.modalCard}>
             <h3 style={{ color: "#f1f5f9", marginBottom: 16, fontSize: 16 }}>➕ បន្ថែមសិស្សថ្មី</h3>
-            {[{ label: "ឈ្មោះ", key: "name", ph: "ឈ្មោះសិស្ស" }, { label: "អាយុ", key: "age", ph: "អាយុ" }].map(f => (
-              <div key={f.key} style={{ marginBottom: 12 }}>
-                <label style={{ fontSize: 12, color: "#94a3b8", display: "block", marginBottom: 4 }}>{f.label}</label>
-                <input style={styles.input} placeholder={f.ph} value={form[f.key]} onChange={e => setForm({ ...form, [f.key]: e.target.value })} />
-              </div>
-            ))}
             <div style={{ marginBottom: 12 }}>
-              <label style={{ fontSize: 12, color: "#94a3b8", display: "block", marginBottom: 4 }}>ភេទ</label>
+              <label style={styles.label}>ឈ្មោះ</label>
+              <input style={styles.input} value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} />
+            </div>
+            <div style={{ marginBottom: 12 }}>
+              <label style={styles.label}>អាយុ</label>
+              <input style={styles.input} value={form.age} onChange={e => setForm({ ...form, age: e.target.value })} />
+            </div>
+            <div style={{ marginBottom: 12 }}>
+              <label style={styles.label}>ភេទ</label>
               <select style={styles.select} value={form.gender} onChange={e => setForm({ ...form, gender: e.target.value })}>
                 <option>ប្រុស</option><option>ស្រី</option>
               </select>
             </div>
             <div style={{ marginBottom: 16 }}>
-              <label style={{ fontSize: 12, color: "#94a3b8", display: "block", marginBottom: 4 }}>ថ្នាក់</label>
-              <select style={styles.select} value={form.classId} onChange={e => setForm({ ...form, classId: e.target.value })}>
-                {Object.values(MOCK_CLASSES).map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-              </select>
+              <label style={styles.label}>ថ្នាក់</label>
+              <input style={styles.input} list="class-suggestions-student" placeholder="ឧទាហរណ៍: 300 or A4, 402"
+                value={form.className} onChange={e => setForm({ ...form, className: e.target.value })} />
+              <datalist id="class-suggestions-student">
+                {classNames.map(c => <option key={c} value={c} />)}
+              </datalist>
             </div>
             <div style={{ display: "flex", gap: 8 }}>
-              <button style={{ ...styles.btnSm("#6366f1"), flex: 1, padding: "10px" }} onClick={addStudent}>រក្សាទុក</button>
-              <button style={{ ...styles.btnSm("#475569"), flex: 1, padding: "10px" }} onClick={() => setShowAdd(false)}>បោះបង់</button>
+              <button style={{ ...styles.btnSm("#6366f1"), flex: 1, padding: "10px", opacity: saving ? 0.6 : 1 }} onClick={addStudent} disabled={saving}>
+                {saving ? "កំពុងរក្សាទុក..." : "រក្សាទុក"}
+              </button>
+              <button style={{ ...styles.btnSm("#475569"), flex: 1, padding: "10px" }} onClick={() => setShowAdd(false)} disabled={saving}>បោះបង់</button>
             </div>
           </div>
         </div>
@@ -451,77 +707,66 @@ function StudentsPage({ onAlert, showAdd, setShowAdd }) {
   );
 }
 
-// ─── SCHEDULES PAGE ───────────────────────────────────────────
-function SchedulesPage({ onAlert }) {
+// ═══════════════════════════════════════════════════════════════
+// SCHEDULES PAGE (read-only; created automatically when Admin
+// adds a teacher — see TeachersPage)
+// ═══════════════════════════════════════════════════════════════
+function SchedulesPage() {
+  const [schedules, setSchedules] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    (async () => {
+      const snap = await getDocs(collection(db, "schedules"));
+      setSchedules(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+      setLoading(false);
+    })();
+  }, []);
+
   return (
-    <div>
-      <div style={styles.card}>
-        <div style={styles.cardTitle}>📅 ម៉ោងបង្រៀនថ្ងៃនេះ</div>
+    <div style={styles.card}>
+      <div style={styles.cardTitle}>📅 ម៉ោងបង្រៀនទាំងអស់</div>
+      {loading ? <div style={styles.spinner}>⏳ កំពុងផ្ទុក...</div> : (
         <table style={styles.table}>
-          <thead>
-            <tr>{["គ្រូ", "មុខវិជ្ជា", "ថ្នាក់", "ម៉ោងចាប់ផ្តើម", "ម៉ោងបញ្ចប់", "ថ្ងៃខែ"].map(h => <th key={h} style={styles.th}>{h}</th>)}</tr>
-          </thead>
+          <thead><tr>{["គ្រូ", "ថ្នាក់", "ម៉ោងចាប់ផ្តើម", "ម៉ោងបញ្ចប់", "ថ្ងៃខែ"].map(h => <th key={h} style={styles.th}>{h}</th>)}</tr></thead>
           <tbody>
-            {MOCK_SCHEDULES.map(sch => {
-              const t = MOCK_USERS[sch.teacherId];
-              return (
-                <tr key={sch.id}>
-                  <td style={styles.td}><strong style={{ color: "#f1f5f9" }}>{t?.name}</strong></td>
-                  <td style={styles.td}><span style={styles.badge("#a78bfa", "#1e1b4b")}>{t?.subject}</span></td>
-                  <td style={styles.td}>{MOCK_CLASSES[sch.classId]?.name}</td>
-                  <td style={styles.td}><span style={{ color: "#34d399" }}>🕐 {sch.startTime}</span></td>
-                  <td style={styles.td}><span style={{ color: "#f97316" }}>🕑 {sch.endTime}</span></td>
-                  <td style={styles.td}>{sch.date}</td>
-                </tr>
-              );
-            })}
+            {schedules.map(sch => (
+              <tr key={sch.id}>
+                <td style={styles.td}><strong style={{ color: "#f1f5f9" }}>{sch.teacherName}</strong></td>
+                <td style={styles.td}>{sch.className}</td>
+                <td style={styles.td}><span style={{ color: "#34d399" }}>🕐 {sch.startTime}</span></td>
+                <td style={styles.td}><span style={{ color: "#f97316" }}>🕑 {sch.endTime}</span></td>
+                <td style={styles.td}>{sch.date}</td>
+              </tr>
+            ))}
           </tbody>
         </table>
-      </div>
-      <div style={{ ...styles.card, background: "#0c1a2e", border: "1px solid #1e3a5f" }}>
-        <div style={styles.cardTitle}>⚙️ Firebase Logic — Auto-mark Absent</div>
-        <pre style={{ fontSize: 11, color: "#93c5fd", lineHeight: 1.6, overflow: "auto" }}>{`// Firebase Cloud Function (scheduled every 5 min)
-exports.autoMarkTeacherAbsent = functions.pubsub
-  .schedule("every 5 minutes").onRun(async () => {
-    const now = new Date();
-    const timeStr = now.toTimeString().slice(0, 5); // "HH:MM"
-    const dateStr = now.toISOString().split("T")[0];
-
-    const schedSnap = await db.collection("schedules")
-      .where("date", "==", dateStr)
-      .where("endTime", "<=", timeStr).get();
-
-    for (const doc of schedSnap.docs) {
-      const sch = doc.data();
-      // Check if teacher submitted attendance
-      const attSnap = await db.collection("attendance")
-        .where("scheduleId", "==", doc.id).limit(1).get();
-      
-      if (attSnap.empty) {
-        // Mark teacher as Absent
-        await db.collection("teacher_attendance").add({
-          teacherId: sch.teacherId,
-          scheduleId: doc.id,
-          date: dateStr,
-          status: "A", // Auto Absent
-          markedAt: admin.firestore.FieldValue.serverTimestamp()
-        });
-      }
-    }
-  });`}</pre>
+      )}
+      <div style={{ fontSize: 11, color: "#475569", marginTop: 12 }}>
+        💡 ម៉ោងរៀនត្រូវបានបង្កើតដោយស្វ័យប្រវត្តិនៅពេល Admin បន្ថែមគ្រូថ្មីនៅទំព័រ "គ្រូបង្រៀន"។
       </div>
     </div>
   );
 }
 
-// ─── REPORTS PAGE ─────────────────────────────────────────────
-function ReportsPage({ attendance }) {
-  const records = Object.entries(attendance);
+// ═══════════════════════════════════════════════════════════════
+// REPORTS PAGE
+// ═══════════════════════════════════════════════════════════════
+function ReportsPage() {
+  const [records, setRecords] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    (async () => {
+      const snap = await getDocs(query(collection(db, "attendance"), where("date", "==", todayStr())));
+      setRecords(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+      setLoading(false);
+    })();
+  }, []);
+
   const statusCount = { A: 0, P: 0, Pe: 0, L: 0 };
-  records.forEach(([, data]) => {
-    Object.values(data).forEach(status => { if (statusCount[status] !== undefined) statusCount[status]++; });
-  });
-  const total = Object.values(statusCount).reduce((a, b) => a + b, 0);
+  records.forEach(r => { if (statusCount[r.status] !== undefined) statusCount[r.status]++; });
+  const total = records.length;
 
   return (
     <div>
@@ -530,86 +775,130 @@ function ReportsPage({ attendance }) {
           <div key={k} style={styles.statCard(v.color)}>
             <div style={styles.statVal(v.color)}>{statusCount[k]}</div>
             <div style={styles.statLabel}>{v.full}</div>
-            <div style={{ fontSize: 11, color: "#475569", marginTop: 4 }}>
-              {total ? Math.round(statusCount[k] / total * 100) : 0}%
-            </div>
+            <div style={{ fontSize: 11, color: "#475569", marginTop: 4 }}>{total ? Math.round(statusCount[k] / total * 100) : 0}%</div>
           </div>
         ))}
       </div>
 
       <div style={styles.card}>
         <div style={styles.cardTitle}>📋 តារាងអវត្តមានសិស្ស (ថ្ងៃនេះ)</div>
-        {records.length === 0
-          ? <div style={{ color: "#475569", fontSize: 13, textAlign: "center", padding: 24 }}>⚠️ មិនទាន់មានទិន្នន័យ — គ្រូនៅមិនទាន់ស្រង់</div>
-          : <table style={styles.table}>
-              <thead>
-                <tr>{["ម៉ោងរៀន", "សិស្ស", "ស្ថានភាព"].map(h => <th key={h} style={styles.th}>{h}</th>)}</tr>
-              </thead>
-              <tbody>
-                {records.map(([schedId, data]) =>
-                  Object.entries(data).map(([sid, status]) => {
-                    const sch = MOCK_SCHEDULES.find(s => s.id === schedId);
-                    const st = MOCK_STUDENTS[sid];
-                    const cfg = STATUS_CONFIG[status];
+        {loading ? <div style={styles.spinner}>⏳ កំពុងផ្ទុក...</div> :
+          records.length === 0
+            ? <div style={{ color: "#475569", fontSize: 13, textAlign: "center", padding: 24 }}>⚠️ មិនទាន់មានទិន្នន័យ — គ្រូនៅមិនទាន់ស្រង់</div>
+            : <table style={styles.table}>
+                <thead><tr>{["សិស្ស", "ថ្នាក់", "ស្ថានភាព", "ម៉ោងស្រង់"].map(h => <th key={h} style={styles.th}>{h}</th>)}</tr></thead>
+                <tbody>
+                  {records.map(r => {
+                    const cfg = STATUS_CONFIG[r.status];
                     return (
-                      <tr key={`${schedId}-${sid}`}>
-                        <td style={styles.td}>{sch?.startTime}–{sch?.endTime}</td>
-                        <td style={styles.td}>{st?.name}</td>
+                      <tr key={r.id}>
+                        <td style={styles.td}>{r.studentName}</td>
+                        <td style={styles.td}>{r.className}</td>
                         <td style={styles.td}><span style={styles.badge(cfg.color, cfg.bg)}>{cfg.label} — {cfg.full}</span></td>
+                        <td style={styles.td}>{r.submittedAt?.toDate ? r.submittedAt.toDate().toLocaleTimeString("km-KH") : "—"}</td>
                       </tr>
                     );
-                  })
-                )}
-              </tbody>
-            </table>
-        }
+                  })}
+                </tbody>
+              </table>}
       </div>
     </div>
   );
 }
 
-// ─── TAKE ATTENDANCE PAGE ─────────────────────────────────────
-function TakeAttendancePage({ user, attendance, setAttendance, onAlert }) {
-  const now = new Date();
-  const timeStr = now.toTimeString().slice(0, 5);
-  const mySchedules = MOCK_SCHEDULES.filter(s => s.teacherId === user.uid && s.date === today);
-  const activeSchedule = mySchedules.find(s => timeStr >= s.startTime && timeStr <= s.endTime);
-  const [selected, setSelected] = useState(activeSchedule?.id || mySchedules[0]?.id || null);
+// ═══════════════════════════════════════════════════════════════
+// TAKE ATTENDANCE PAGE (Teacher) — writes real docs to Firestore,
+// time-locked to the teacher's own schedule window.
+// ═══════════════════════════════════════════════════════════════
+function TakeAttendancePage({ user, onAlert }) {
+  const [schedules, setSchedules] = useState([]);
+  const [students, setStudents] = useState([]);
+  const [selected, setSelected] = useState(null);
   const [localStatus, setLocalStatus] = useState({});
+  const [submittedSchedules, setSubmittedSchedules] = useState({});
+  const [loading, setLoading] = useState(true);
+  const [submitting, setSubmitting] = useState(false);
 
-  const schedule = mySchedules.find(s => s.id === selected);
-  const isAllowed = schedule && timeStr >= schedule.startTime && timeStr <= schedule.endTime;
-  const students = Object.values(MOCK_STUDENTS).filter(s => s.classId === user.classId);
+  const timeStr = nowTimeStr();
+  const date = todayStr();
 
   useEffect(() => {
-    if (selected && attendance[selected]) setLocalStatus(attendance[selected]);
-    else setLocalStatus({});
-  }, [selected]);
+    (async () => {
+      setLoading(true);
+      const schedSnap = await getDocs(query(collection(db, "schedules"), where("teacherId", "==", user.uid), where("date", "==", date)));
+      const scheds = schedSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+      setSchedules(scheds);
+
+      const studSnap = await getDocs(query(collection(db, "students"), where("className", "==", user.className || "")));
+      setStudents(studSnap.docs.map(d => ({ id: d.id, ...d.data() })));
+
+      const submittedMap = {};
+      for (const s of scheds) {
+        const attSnap = await getDocs(query(collection(db, "attendance"), where("scheduleId", "==", s.id), where("date", "==", date)));
+        submittedMap[s.id] = !attSnap.empty;
+      }
+      setSubmittedSchedules(submittedMap);
+
+      const active = scheds.find(s => timeStr >= s.startTime && timeStr <= s.endTime);
+      setSelected(active?.id || scheds[0]?.id || null);
+      setLoading(false);
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user]);
+
+  const schedule = schedules.find(s => s.id === selected);
+  const isAllowed = schedule && timeStr >= schedule.startTime && timeStr <= schedule.endTime && !submittedSchedules[selected];
 
   const setStatus = (sid, status) => {
-    if (!isAllowed) { onAlert("⏰ មិនទាន់ដល់ម៉ោងបង្រៀនទេ!", "error"); return; }
+    if (!isAllowed) { onAlert("⏰ មិនទាន់ដល់ម៉ោងបង្រៀន ឬបានស្រង់រួចហើយ!", "error"); return; }
     setLocalStatus(prev => ({ ...prev, [sid]: status }));
   };
 
-  const submit = () => {
+  const submit = async () => {
     if (!isAllowed) { onAlert("⏰ មិនទាន់ដល់ម៉ោងបង្រៀនទេ!", "error"); return; }
     const missing = students.filter(s => !localStatus[s.id]);
-    if (missing.length > 0) {
-      onAlert(`⚠️ ត្រូវស្រង់ ${missing.length} នាក់ទៀត!`, "error"); return;
+    if (missing.length > 0) { onAlert(`⚠️ ត្រូវស្រង់ ${missing.length} នាក់ទៀត!`, "error"); return; }
+
+    setSubmitting(true);
+    try {
+      const batch = writeBatch(db);
+      students.forEach(s => {
+        const ref = doc(collection(db, "attendance"));
+        batch.set(ref, {
+          scheduleId: schedule.id,
+          studentId: s.id,
+          studentName: s.name,
+          className: s.className,
+          teacherId: user.uid,
+          status: localStatus[s.id],
+          date,
+          submittedAt: serverTimestamp(),
+        });
+      });
+      await batch.commit();
+      setSubmittedSchedules(prev => ({ ...prev, [schedule.id]: true }));
+      onAlert("✅ បានស្រង់អវត្តមានជោគជ័យ!");
+    } catch (err) {
+      onAlert(err.message, "error");
     }
-    setAttendance(prev => ({ ...prev, [selected]: localStatus }));
-    onAlert("✅ បានស្រង់អវត្តមានជោគជ័យ! (Firebase: setDoc to 'attendance' collection)");
+    setSubmitting(false);
   };
+
+  if (loading) return <div style={styles.spinner}>⏳ កំពុងផ្ទុកទិន្នន័យ...</div>;
+
+  if (schedules.length === 0) {
+    return <div style={{ ...styles.card, textAlign: "center", color: "#475569", padding: 40 }}>📭 មិនមានម៉ោងបង្រៀនថ្ងៃនេះ</div>;
+  }
 
   return (
     <div>
       <div style={styles.card}>
         <div style={styles.cardTitle}>📋 ជ្រើសម៉ោង</div>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          {mySchedules.map(s => {
+          {schedules.map(s => {
             const active = timeStr >= s.startTime && timeStr <= s.endTime;
             const past = timeStr > s.endTime;
-            const done = !!attendance[s.id];
+            const done = submittedSchedules[s.id];
             return (
               <button key={s.id} onClick={() => setSelected(s.id)} style={{
                 padding: "10px 16px", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 600,
@@ -628,21 +917,23 @@ function TakeAttendancePage({ user, attendance, setAttendance, onAlert }) {
         <>
           <div style={{ ...styles.card, border: isAllowed ? "1px solid #16a34a" : "1px solid #dc2626", background: isAllowed ? "#052e16" : "#450a0a", marginBottom: 8 }}>
             <div style={{ fontSize: 13, color: isAllowed ? "#86efac" : "#fca5a5" }}>
-              {isAllowed ? "✅ ម៉ោងបង្រៀន — អាចស្រង់បាន" : `⏰ ម៉ោងបង្រៀនចាប់ ${schedule.startTime}–${schedule.endTime} — ${timeStr < schedule.startTime ? "មិនទាន់ដល់ម៉ោង" : "ផុតម៉ោងហើយ"}`}
+              {submittedSchedules[selected]
+                ? "✅ បានស្រង់អវត្តមានរួចហើយសម្រាប់ម៉ោងនេះ"
+                : isAllowed
+                  ? "✅ ម៉ោងបង្រៀន — អាចស្រង់បាន"
+                  : `⏰ ម៉ោងបង្រៀនចាប់ ${schedule.startTime}–${schedule.endTime} — ${timeStr < schedule.startTime ? "មិនទាន់ដល់ម៉ោង" : "ផុតម៉ោងហើយ"}`}
             </div>
           </div>
 
           <div style={styles.card}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-              <div style={styles.cardTitle}>👨‍🎓 បញ្ជីសិស្ស — {MOCK_CLASSES[schedule.classId]?.name}</div>
+              <div style={styles.cardTitle}>👨‍🎓 បញ្ជីសិស្ស — {schedule.className}</div>
               <div style={{ display: "flex", gap: 6 }}>
-                <button style={styles.btnSm("#475569")} onClick={() => {
-                  const all = {};
-                  students.forEach(s => { all[s.id] = "P"; });
-                  setLocalStatus(all);
+                <button style={styles.btnSm("#475569")} disabled={!isAllowed} onClick={() => {
+                  const all = {}; students.forEach(s => { all[s.id] = "P"; }); setLocalStatus(all);
                 }}>✅ P ទាំងអស់</button>
-                <button style={{ ...styles.btnSm("#6366f1"), padding: "6px 20px" }} onClick={submit}>
-                  💾 Submit
+                <button style={{ ...styles.btnSm("#6366f1"), padding: "6px 20px", opacity: submitting || !isAllowed ? 0.6 : 1 }} onClick={submit} disabled={submitting || !isAllowed}>
+                  {submitting ? "កំពុងរក្សាទុក..." : "💾 Submit"}
                 </button>
               </div>
             </div>
@@ -657,9 +948,7 @@ function TakeAttendancePage({ user, attendance, setAttendance, onAlert }) {
             </div>
 
             <table style={styles.table}>
-              <thead>
-                <tr>{["#", "ឈ្មោះ", "ភេទ", "ស្ថានភាព"].map(h => <th key={h} style={styles.th}>{h}</th>)}</tr>
-              </thead>
+              <thead><tr>{["#", "ឈ្មោះ", "ភេទ", "ស្ថានភាព"].map(h => <th key={h} style={styles.th}>{h}</th>)}</tr></thead>
               <tbody>
                 {students.map((s, i) => (
                   <tr key={s.id} style={{ background: localStatus[s.id] ? `${STATUS_CONFIG[localStatus[s.id]]?.bg}20` : "transparent" }}>
@@ -669,24 +958,19 @@ function TakeAttendancePage({ user, attendance, setAttendance, onAlert }) {
                     <td style={styles.td}>
                       <div style={{ display: "flex", gap: 6 }}>
                         {Object.keys(STATUS_CONFIG).map(k => (
-                          <button key={k} style={styles.statusBtn(k, localStatus[s.id] === k)} onClick={() => setStatus(s.id, k)}>
-                            {k}
-                          </button>
+                          <button key={k} style={styles.statusBtn(k, localStatus[s.id] === k)} onClick={() => setStatus(s.id, k)} disabled={!isAllowed}>{k}</button>
                         ))}
                       </div>
                     </td>
                   </tr>
                 ))}
+                {students.length === 0 && (
+                  <tr><td colSpan={4} style={{ ...styles.td, textAlign: "center", color: "#475569" }}>📭 មិនមានសិស្សក្នុងថ្នាក់នេះ — សូម Admin បន្ថែមសិស្ស</td></tr>
+                )}
               </tbody>
             </table>
           </div>
         </>
-      )}
-
-      {mySchedules.length === 0 && (
-        <div style={{ ...styles.card, textAlign: "center", color: "#475569", padding: 40 }}>
-          📭 មិនមានម៉ោងបង្រៀនថ្ងៃនេះ
-        </div>
       )}
     </div>
   );
