@@ -38,6 +38,26 @@ const DEFAULT_CLASS = "";
 const todayStr = () => new Date().toISOString().split("T")[0];
 const nowTimeStr = () => new Date().toTimeString().slice(0, 5);
 
+// Weekly recurring schedule support — JS Date.getDay(): 0=Sun ... 6=Sat
+const DAYS_OF_WEEK = [
+  { value: 1, label: "ថ្ងៃច័ន្ទ" },
+  { value: 2, label: "ថ្ងៃអង្គារ" },
+  { value: 3, label: "ថ្ងៃពុធ" },
+  { value: 4, label: "ថ្ងៃព្រហស្បតិ៍" },
+  { value: 5, label: "ថ្ងៃសុក្រ" },
+  { value: 6, label: "ថ្ងៃសៅរ៍" },
+  { value: 0, label: "ថ្ងៃអាទិត្យ" },
+];
+const dayLabel = (v) => DAYS_OF_WEEK.find(d => d.value === v)?.label || "—";
+const todayDow = () => new Date().getDay();
+
+// Weekly recurring schedule support — Admin sets which day(s) of the
+// week a teacher teaches which class, at which time. JS getDay():
+// 0=Sunday..6=Saturday, mapped to Khmer day names below.
+const DAY_OPTIONS = ["ចន្ទ", "អង្គារ", "ពុធ", "ព្រហស្បតិ៍", "សុក្រ", "សៅរ៍", "អាទិត្យ"];
+const DAY_BY_JS_INDEX = ["អាទិត្យ", "ចន្ទ", "អង្គារ", "ពុធ", "ព្រហស្បតិ៍", "សុក្រ", "សៅរ៍"];
+const todayDayName = () => DAY_BY_JS_INDEX[new Date().getDay()];
+
 // Fetch known class names from Firestore (for datalist suggestions)
 function useClassSuggestions() {
   const [classNames, setClassNames] = useState([]);
@@ -211,7 +231,7 @@ export default function App() {
           {page === "dashboard" && <Dashboard user={user} />}
           {page === "teachers" && user.role === "admin" && <TeachersPage onAlert={showAlert} />}
           {page === "students" && user.role === "admin" && <StudentsPage onAlert={showAlert} />}
-          {page === "schedules" && user.role === "admin" && <SchedulesPage />}
+          {page === "schedules" && user.role === "admin" && <SchedulesPage onAlert={showAlert} />}
           {page === "reports" && user.role === "admin" && <ReportsPage />}
           {page === "take_attendance" && user.role === "teacher" && <TakeAttendancePage user={user} onAlert={showAlert} />}
         </div>
@@ -265,7 +285,7 @@ function LoginPage({ onAlert }) {
         </button>
 
         <div style={{ marginTop: 16, padding: 12, background: "#0f172a", borderRadius: 8, fontSize: 11, color: "#475569" }}>
-          Admin : Email : <b>admin@school.edu.kh</b> | Password : <b>admin123456789</b>
+          Admin បង្កើត account សម្រាប់គ្រូបង្រៀនទាំងអស់ — គ្រូមិនអាចចុះឈ្មោះខ្លួនឯងបានទេ។
         </div>
       </div>
     </div>
@@ -286,18 +306,30 @@ function Dashboard({ user }) {
     (async () => {
       setLoading(true);
       const date = todayStr();
+      const dow = todayDow();
 
       let schedSnap;
       if (user.role === "admin") {
-        schedSnap = await getDocs(query(collection(db, "schedules"), where("date", "==", date)));
+        schedSnap = await getDocs(query(collection(db, "schedules"), where("dayOfWeek", "==", dow)));
       } else {
-        schedSnap = await getDocs(query(collection(db, "schedules"), where("date", "==", date), where("teacherId", "==", user.uid)));
+        schedSnap = await getDocs(query(collection(db, "schedules"), where("dayOfWeek", "==", dow), where("teacherId", "==", user.uid)));
       }
       const scheds = schedSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+      scheds.sort((a, b) => a.startTime.localeCompare(b.startTime));
 
       let studSnap;
-      if (user.role === "admin") studSnap = await getDocs(collection(db, "students"));
-      else studSnap = await getDocs(query(collection(db, "students"), where("className", "==", user.className || "")));
+      if (user.role === "admin") {
+        studSnap = await getDocs(collection(db, "students"));
+      } else {
+        // Count students across all of this teacher's classes today
+        const classNamesToday = [...new Set(scheds.map(s => s.className))];
+        if (classNamesToday.length > 0) {
+          const results = await Promise.all(classNamesToday.map(cn => getDocs(query(collection(db, "students"), where("className", "==", cn)))));
+          studSnap = { size: results.reduce((sum, r) => sum + r.size, 0) };
+        } else {
+          studSnap = { size: 0 };
+        }
+      }
 
       const submittedMap = {};
       for (const s of scheds) {
@@ -337,9 +369,9 @@ function Dashboard({ user }) {
       </div>
 
       <div style={styles.card}>
-        <div style={styles.cardTitle}>📅 ម៉ោងបង្រៀនថ្ងៃនេះ</div>
+        <div style={styles.cardTitle}>📅 ម៉ោងបង្រៀន{dayLabel(todayDow())}នេះ</div>
         {schedules.length === 0
-          ? <div style={{ color: "#475569", fontSize: 13, textAlign: "center", padding: 20 }}>📭 មិនមានម៉ោងរៀនកំណត់សម្រាប់ថ្ងៃនេះ</div>
+          ? <div style={{ color: "#475569", fontSize: 13, textAlign: "center", padding: 20 }}>📭 មិនមានម៉ោងរៀនកំណត់សម្រាប់{dayLabel(todayDow())}</div>
           : <table style={styles.table}>
               <thead><tr>{["គ្រូ", "ថ្នាក់", "ម៉ោង", "ស្ថានភាព"].map(h => <th key={h} style={styles.th}>{h}</th>)}</tr></thead>
               <tbody>
@@ -386,18 +418,15 @@ function Dashboard({ user }) {
 // ═══════════════════════════════════════════════════════════════
 // TEACHERS PAGE — Admin creates teacher LOGIN (email+password)
 // via a SECONDARY Firebase app so Admin's own session survives.
+// Class/day/time assignment now lives in the "ម៉ោងរៀន" (Schedules)
+// page — a teacher can have many weekly slots across many days.
 // ═══════════════════════════════════════════════════════════════
 function TeachersPage({ onAlert }) {
   const [teachers, setTeachers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showAdd, setShowAdd] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [classNames, refreshClasses] = useClassSuggestions();
-  const [form, setForm] = useState({
-    name: "", age: "", gender: "ប្រុស", subject: "",
-    className: DEFAULT_CLASS, startTime: "07:30", endTime: "09:00",
-    email: "", password: "",
-  });
+  const [form, setForm] = useState({ name: "", age: "", gender: "ប្រុស", subject: "", email: "", password: "" });
 
   const loadTeachers = useCallback(async () => {
     setLoading(true);
@@ -409,8 +438,8 @@ function TeachersPage({ onAlert }) {
   useEffect(() => { loadTeachers(); }, [loadTeachers]);
 
   const addTeacher = async () => {
-    if (!form.name || !form.subject || !form.className.trim() || !form.email || !form.password) {
-      onAlert("សូមបំពេញព័ត៌មានឱ្យបានគ្រប់ (រួមទាំងឈ្មោះថ្នាក់ Email/Password)", "error");
+    if (!form.name || !form.subject || !form.email || !form.password) {
+      onAlert("សូមបំពេញព័ត៌មានឱ្យបានគ្រប់ (រួមទាំង Email/Password)", "error");
       return;
     }
     if (form.password.length < 6) {
@@ -425,36 +454,20 @@ function TeachersPage({ onAlert }) {
     try {
       const cred = await createUserWithEmailAndPassword(secondaryAuth, form.email, form.password);
       const uid = cred.user.uid;
-      const className = form.className.trim();
 
       await setDoc(doc(db, "users", uid), {
         name: form.name,
         age: Number(form.age) || null,
         gender: form.gender,
         subject: form.subject,
-        className,
-        startTime: form.startTime,
-        endTime: form.endTime,
         role: "teacher",
         email: form.email,
         createdAt: serverTimestamp(),
       });
 
-      await addDoc(collection(db, "schedules"), {
-        teacherId: uid,
-        teacherName: form.name,
-        className,
-        date: todayStr(),
-        startTime: form.startTime,
-        endTime: form.endTime,
-      });
-
-      await ensureClassExists(className);
-      refreshClasses();
-
-      onAlert(`បានបង្កើតគណនីគ្រូ "${form.name}" ជោគជ័យ! (Email: ${form.email})`);
+      onAlert(`បានបង្កើតគណនីគ្រូ "${form.name}" ជោគជ័យ! (Email: ${form.email}) — ឥឡូវទៅកាន់ទំព័រ "ម៉ោងរៀន" ដើម្បីកំណត់ថ្ងៃ/ថ្នាក់/ម៉ោងបង្រៀន។`);
       setShowAdd(false);
-      setForm({ name: "", age: "", gender: "ប្រុស", subject: "", className: DEFAULT_CLASS, startTime: "07:30", endTime: "09:00", email: "", password: "" });
+      setForm({ name: "", age: "", gender: "ប្រុស", subject: "", email: "", password: "" });
       loadTeachers();
     } catch (err) {
       const msg = err.code === "auth/email-already-in-use" ? "Email នេះមានគណនីរួចហើយ" : err.message;
@@ -466,13 +479,13 @@ function TeachersPage({ onAlert }) {
   };
 
   const deleteTeacher = async (t) => {
-    if (!window.confirm(`តើអ្នកប្រាកដថាចង់លុបគ្រូ "${t.name}" មែនទេ?`)) return;
+    if (!window.confirm(`តើអ្នកប្រាកដថាចង់លុបគ្រូ "${t.name}" មែនទេ? (ម៉ោងរៀនទាំងអស់របស់គាត់នឹងត្រូវលុបចោលផងដែរ)`)) return;
     try {
-      // Removes the Firestore profile + any schedules tied to this teacher.
-      // NOTE: this does NOT delete their Firebase Auth login — a client app
-      // can only delete the currently-signed-in user's own auth account,
-      // not someone else's. Deleting another user's login needs the Admin
-      // SDK (Cloud Function) or manual removal in Firebase Console.
+      // Removes the Firestore profile + all weekly schedule slots tied to this
+      // teacher. NOTE: this does NOT delete their Firebase Auth login — a
+      // client app can only delete the currently-signed-in user's own auth
+      // account, not someone else's. That needs the Admin SDK (Cloud
+      // Function) or manual removal in Firebase Console.
       await deleteDoc(doc(db, "users", t.uid));
       const schedSnap = await getDocs(query(collection(db, "schedules"), where("teacherId", "==", t.uid)));
       await Promise.all(schedSnap.docs.map(d => deleteDoc(doc(db, "schedules", d.id))));
@@ -492,24 +505,26 @@ function TeachersPage({ onAlert }) {
         <div style={styles.cardTitle}>👨‍🏫 បញ្ជីគ្រូបង្រៀន</div>
         {loading ? <div style={styles.spinner}>⏳ កំពុងផ្ទុក...</div> : (
           <table style={styles.table}>
-            <thead><tr>{["ឈ្មោះ", "Email", "មុខវិជ្ជា", "ថ្នាក់", "ម៉ោងបង្រៀន", ""].map(h => <th key={h} style={styles.th}>{h}</th>)}</tr></thead>
+            <thead><tr>{["ឈ្មោះ", "Email", "មុខវិជ្ជា", "អាយុ/ភេទ", ""].map(h => <th key={h} style={styles.th}>{h}</th>)}</tr></thead>
             <tbody>
               {teachers.map(t => (
                 <tr key={t.uid}>
                   <td style={styles.td}><strong style={{ color: "#f1f5f9" }}>{t.name}</strong></td>
                   <td style={{ ...styles.td, color: "#64748b" }}>{t.email}</td>
                   <td style={styles.td}><span style={styles.badge("#a78bfa", "#1e1b4b")}>{t.subject}</span></td>
-                  <td style={styles.td}>{t.className || "—"}</td>
-                  <td style={styles.td}>{t.startTime} – {t.endTime}</td>
+                  <td style={styles.td}>{t.age ? `${t.age} ឆ្នាំ` : "—"} · {t.gender}</td>
                   <td style={styles.td}><button style={styles.btnSm("#ef4444")} onClick={() => deleteTeacher(t)}>លុប</button></td>
                 </tr>
               ))}
               {teachers.length === 0 && (
-                <tr><td colSpan={6} style={{ ...styles.td, textAlign: "center", color: "#475569" }}>📭 មិនទាន់មានគ្រូ</td></tr>
+                <tr><td colSpan={5} style={{ ...styles.td, textAlign: "center", color: "#475569" }}>📭 មិនទាន់មានគ្រូ</td></tr>
               )}
             </tbody>
           </table>
         )}
+        <div style={{ fontSize: 11, color: "#475569", marginTop: 12 }}>
+          💡 កំណត់ថ្ងៃ/ថ្នាក់/ម៉ោងបង្រៀនរបស់គ្រូម្នាក់ៗ នៅទំព័រ "ម៉ោងរៀន" — គ្រូម្នាក់អាចមាន slot ច្រើនតាមចង់ (ច្រើនថ្ងៃ ច្រើនថ្នាក់)។
+        </div>
       </div>
 
       {showAdd && (
@@ -537,24 +552,6 @@ function TeachersPage({ onAlert }) {
               <label style={styles.label}>មុខវិជ្ជា</label>
               <input style={styles.input} value={form.subject} onChange={e => setForm({ ...form, subject: e.target.value })} />
             </div>
-            <div style={{ marginBottom: 12 }}>
-              <label style={styles.label}>ថ្នាក់ដែលបង្រៀន</label>
-              <input style={styles.input} list="class-suggestions-teacher" placeholder="ឧទាហរណ៍: 300 or A4, 402"
-                value={form.className} onChange={e => setForm({ ...form, className: e.target.value })} />
-              <datalist id="class-suggestions-teacher">
-                {classNames.map(c => <option key={c} value={c} />)}
-              </datalist>
-            </div>
-            <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-              <div style={{ flex: 1 }}>
-                <label style={styles.label}>ម៉ោងចាប់ផ្តើម</label>
-                <input style={styles.input} type="time" value={form.startTime} onChange={e => setForm({ ...form, startTime: e.target.value })} />
-              </div>
-              <div style={{ flex: 1 }}>
-                <label style={styles.label}>ម៉ោងបញ្ចប់</label>
-                <input style={styles.input} type="time" value={form.endTime} onChange={e => setForm({ ...form, endTime: e.target.value })} />
-              </div>
-            </div>
             <div style={{ marginBottom: 12, paddingTop: 8, borderTop: "1px solid #334155" }}>
               <label style={styles.label}>Email (សម្រាប់ចូលប្រើប្រាស់)</label>
               <input style={styles.input} type="email" value={form.email} onChange={e => setForm({ ...form, email: e.target.value })} />
@@ -576,6 +573,7 @@ function TeachersPage({ onAlert }) {
     </div>
   );
 }
+
 
 // ═══════════════════════════════════════════════════════════════
 // STUDENTS PAGE
@@ -687,8 +685,8 @@ function StudentsPage({ onAlert }) {
               </select>
             </div>
             <div style={{ marginBottom: 16 }}>
-              <label style={styles.label}>ថ្នាក់</label>
-              <input style={styles.input} list="class-suggestions-student" placeholder="ឧទាហរណ៍: 300 or A4, 402"
+              <label style={styles.label}>ថ្នាក់ (វាយបញ្ចូលបានសេរី)</label>
+              <input style={styles.input} list="class-suggestions-student" placeholder="ឧទាហរណ៍: ថ្នាក់ទី ១២A"
                 value={form.className} onChange={e => setForm({ ...form, className: e.target.value })} />
               <datalist id="class-suggestions-student">
                 {classNames.map(c => <option key={c} value={c} />)}
@@ -708,50 +706,181 @@ function StudentsPage({ onAlert }) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// SCHEDULES PAGE (read-only; created automatically when Admin
-// adds a teacher — see TeachersPage)
+// SCHEDULES PAGE — Admin assigns each teacher a WEEKLY recurring
+// slot: which day (Mon–Sun), which class, and start/end time.
+// A teacher can have many slots (multiple classes, multiple days).
 // ═══════════════════════════════════════════════════════════════
-function SchedulesPage() {
+function SchedulesPage({ onAlert }) {
   const [schedules, setSchedules] = useState([]);
+  const [teachers, setTeachers] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [showAdd, setShowAdd] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [classNames, refreshClasses] = useClassSuggestions();
+  const [form, setForm] = useState({ teacherId: "", dayOfWeek: 1, className: DEFAULT_CLASS, startTime: "07:30", endTime: "09:00" });
 
-  useEffect(() => {
-    (async () => {
-      const snap = await getDocs(collection(db, "schedules"));
-      setSchedules(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-      setLoading(false);
-    })();
+  const loadAll = useCallback(async () => {
+    setLoading(true);
+    const [schedSnap, teacherSnap] = await Promise.all([
+      getDocs(collection(db, "schedules")),
+      getDocs(query(collection(db, "users"), where("role", "==", "teacher"))),
+    ]);
+    setSchedules(schedSnap.docs.map(d => ({ id: d.id, ...d.data() })));
+    setTeachers(teacherSnap.docs.map(d => ({ uid: d.id, ...d.data() })));
+    setLoading(false);
   }, []);
 
+  useEffect(() => { loadAll(); }, [loadAll]);
+
+  const addSchedule = async () => {
+    if (!form.teacherId || !form.className.trim()) {
+      onAlert("សូមជ្រើសគ្រូ និងបំពេញឈ្មោះថ្នាក់!", "error");
+      return;
+    }
+    if (form.startTime >= form.endTime) {
+      onAlert("ម៉ោងចាប់ផ្តើមត្រូវតែមុនម៉ោងបញ្ចប់!", "error");
+      return;
+    }
+    setSaving(true);
+    try {
+      const teacher = teachers.find(t => t.uid === form.teacherId);
+      const className = form.className.trim();
+
+      // Warn (but don't block) if this exact teacher+day+time overlaps
+      const clash = schedules.find(s =>
+        s.teacherId === form.teacherId &&
+        s.dayOfWeek === Number(form.dayOfWeek) &&
+        !(form.endTime <= s.startTime || form.startTime >= s.endTime)
+      );
+      if (clash) {
+        const ok = window.confirm(`⚠️ គ្រូនេះមាន slot ជាន់គ្នារួចហើយនៅ${dayLabel(clash.dayOfWeek)} (${clash.startTime}–${clash.endTime}, ${clash.className}). តើបន្តទេ?`);
+        if (!ok) { setSaving(false); return; }
+      }
+
+      await addDoc(collection(db, "schedules"), {
+        teacherId: form.teacherId,
+        teacherName: teacher?.name || "—",
+        className,
+        dayOfWeek: Number(form.dayOfWeek),
+        startTime: form.startTime,
+        endTime: form.endTime,
+        createdAt: serverTimestamp(),
+      });
+      await ensureClassExists(className);
+      refreshClasses();
+
+      onAlert("បានបន្ថែមម៉ោងរៀនជោគជ័យ!");
+      setShowAdd(false);
+      setForm({ teacherId: "", dayOfWeek: 1, className: DEFAULT_CLASS, startTime: "07:30", endTime: "09:00" });
+      loadAll();
+    } catch (err) {
+      onAlert(err.message, "error");
+    }
+    setSaving(false);
+  };
+
+  const deleteSchedule = async (sch) => {
+    if (!window.confirm(`តើអ្នកប្រាកដថាចង់លុប slot នេះ (${sch.teacherName} — ${dayLabel(sch.dayOfWeek)} ${sch.startTime}-${sch.endTime}) មែនទេ?`)) return;
+    try {
+      await deleteDoc(doc(db, "schedules", sch.id));
+      onAlert("បានលុប slot ចេញ");
+      loadAll();
+    } catch (err) {
+      onAlert(err.message, "error");
+    }
+  };
+
+  // Group schedules by teacher for a clearer weekly view
+  const grouped = {};
+  schedules.forEach(s => {
+    if (!grouped[s.teacherId]) grouped[s.teacherId] = { teacherName: s.teacherName, slots: [] };
+    grouped[s.teacherId].slots.push(s);
+  });
+  Object.values(grouped).forEach(g => g.slots.sort((a, b) => a.dayOfWeek - b.dayOfWeek || a.startTime.localeCompare(b.startTime)));
+
   return (
-    <div style={styles.card}>
-      <div style={styles.cardTitle}>📅 ម៉ោងបង្រៀនទាំងអស់</div>
-      {loading ? <div style={styles.spinner}>⏳ កំពុងផ្ទុក...</div> : (
-        <table style={styles.table}>
-          <thead><tr>{["គ្រូ", "ថ្នាក់", "ម៉ោងចាប់ផ្តើម", "ម៉ោងបញ្ចប់", "ថ្ងៃខែ"].map(h => <th key={h} style={styles.th}>{h}</th>)}</tr></thead>
-          <tbody>
-            {schedules.map(sch => (
-              <tr key={sch.id}>
-                <td style={styles.td}><strong style={{ color: "#f1f5f9" }}>{sch.teacherName}</strong></td>
-                <td style={styles.td}>{sch.className}</td>
-                <td style={styles.td}><span style={{ color: "#34d399" }}>🕐 {sch.startTime}</span></td>
-                <td style={styles.td}><span style={{ color: "#f97316" }}>🕑 {sch.endTime}</span></td>
-                <td style={styles.td}>{sch.date}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-      <div style={{ fontSize: 11, color: "#475569", marginTop: 12 }}>
-        💡 ម៉ោងរៀនត្រូវបានបង្កើតដោយស្វ័យប្រវត្តិនៅពេល Admin បន្ថែមគ្រូថ្មីនៅទំព័រ "គ្រូបង្រៀន"។
+    <div>
+      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 16 }}>
+        <button style={styles.btnSm("#6366f1")} onClick={() => setShowAdd(true)}>+ បន្ថែមម៉ោងរៀន</button>
       </div>
+
+      {loading ? <div style={styles.spinner}>⏳ កំពុងផ្ទុក...</div> : (
+        Object.keys(grouped).length === 0
+          ? <div style={{ ...styles.card, textAlign: "center", color: "#475569", padding: 40 }}>📭 មិនទាន់មានម៉ោងរៀន — ចុច "+ បន្ថែមម៉ោងរៀន" ខាងលើ</div>
+          : Object.entries(grouped).map(([teacherId, g]) => (
+              <div key={teacherId} style={styles.card}>
+                <div style={styles.cardTitle}>👨‍🏫 {g.teacherName}</div>
+                <table style={styles.table}>
+                  <thead><tr>{["ថ្ងៃ", "ថ្នាក់", "ម៉ោងចាប់ផ្តើម", "ម៉ោងបញ្ចប់", ""].map(h => <th key={h} style={styles.th}>{h}</th>)}</tr></thead>
+                  <tbody>
+                    {g.slots.map(sch => (
+                      <tr key={sch.id}>
+                        <td style={styles.td}><span style={styles.badge("#a78bfa", "#1e1b4b")}>{dayLabel(sch.dayOfWeek)}</span></td>
+                        <td style={styles.td}>{sch.className}</td>
+                        <td style={styles.td}><span style={{ color: "#34d399" }}>🕐 {sch.startTime}</span></td>
+                        <td style={styles.td}><span style={{ color: "#f97316" }}>🕑 {sch.endTime}</span></td>
+                        <td style={styles.td}><button style={styles.btnSm("#ef4444")} onClick={() => deleteSchedule(sch)}>លុប</button></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ))
+      )}
+
+      {showAdd && (
+        <div style={styles.modal}>
+          <div style={styles.modalCard}>
+            <h3 style={{ color: "#f1f5f9", marginBottom: 16, fontSize: 16 }}>➕ បន្ថែមម៉ោងរៀនប្រចាំសប្តាហ៍</h3>
+
+            <div style={{ marginBottom: 12 }}>
+              <label style={styles.label}>គ្រូបង្រៀន</label>
+              <select style={styles.select} value={form.teacherId} onChange={e => setForm({ ...form, teacherId: e.target.value })}>
+                <option value="">-- ជ្រើសរើសគ្រូ --</option>
+                {teachers.map(t => <option key={t.uid} value={t.uid}>{t.name} ({t.subject})</option>)}
+              </select>
+            </div>
+
+            <div style={{ marginBottom: 12 }}>
+              <label style={styles.label}>ថ្ងៃក្នុងសប្តាហ៍</label>
+              <select style={styles.select} value={form.dayOfWeek} onChange={e => setForm({ ...form, dayOfWeek: Number(e.target.value) })}>
+                {DAYS_OF_WEEK.map(d => <option key={d.value} value={d.value}>{d.label}</option>)}
+              </select>
+            </div>
+
+            <div style={{ marginBottom: 12 }}>
+              <label style={styles.label}>ថ្នាក់ (វាយបញ្ចូលបានសេរី)</label>
+              <input style={styles.input} list="class-suggestions-schedule" placeholder="ឧទាហរណ៍: ថ្នាក់ទី 9A"
+                value={form.className} onChange={e => setForm({ ...form, className: e.target.value })} />
+              <datalist id="class-suggestions-schedule">
+                {classNames.map(c => <option key={c} value={c} />)}
+              </datalist>
+            </div>
+
+            <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+              <div style={{ flex: 1 }}>
+                <label style={styles.label}>ម៉ោងចាប់ផ្តើម</label>
+                <input style={styles.input} type="time" value={form.startTime} onChange={e => setForm({ ...form, startTime: e.target.value })} />
+              </div>
+              <div style={{ flex: 1 }}>
+                <label style={styles.label}>ម៉ោងបញ្ចប់</label>
+                <input style={styles.input} type="time" value={form.endTime} onChange={e => setForm({ ...form, endTime: e.target.value })} />
+              </div>
+            </div>
+
+            <div style={{ display: "flex", gap: 8 }}>
+              <button style={{ ...styles.btnSm("#6366f1"), flex: 1, padding: "10px", opacity: saving ? 0.6 : 1 }} onClick={addSchedule} disabled={saving}>
+                {saving ? "កំពុងរក្សាទុក..." : "រក្សាទុក"}
+              </button>
+              <button style={{ ...styles.btnSm("#475569"), flex: 1, padding: "10px" }} onClick={() => setShowAdd(false)} disabled={saving}>បោះបង់</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-// ═══════════════════════════════════════════════════════════════
-// REPORTS PAGE
-// ═══════════════════════════════════════════════════════════════
 function ReportsPage() {
   const [records, setRecords] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -825,13 +954,13 @@ function TakeAttendancePage({ user, onAlert }) {
   useEffect(() => {
     (async () => {
       setLoading(true);
-      const schedSnap = await getDocs(query(collection(db, "schedules"), where("teacherId", "==", user.uid), where("date", "==", date)));
+      const schedSnap = await getDocs(query(collection(db, "schedules"), where("teacherId", "==", user.uid), where("dayOfWeek", "==", todayDow())));
       const scheds = schedSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+      scheds.sort((a, b) => a.startTime.localeCompare(b.startTime));
       setSchedules(scheds);
 
-      const studSnap = await getDocs(query(collection(db, "students"), where("className", "==", user.className || "")));
-      setStudents(studSnap.docs.map(d => ({ id: d.id, ...d.data() })));
-
+      // Students are fetched per-selected-schedule (below) since a teacher
+      // may teach several different classes on the same day.
       const submittedMap = {};
       for (const s of scheds) {
         const attSnap = await getDocs(query(collection(db, "attendance"), where("scheduleId", "==", s.id), where("date", "==", date)));
@@ -847,6 +976,18 @@ function TakeAttendancePage({ user, onAlert }) {
   }, [user]);
 
   const schedule = schedules.find(s => s.id === selected);
+
+  // Fetch the roster for whichever schedule slot is currently selected
+  useEffect(() => {
+    if (!schedule) { setStudents([]); return; }
+    (async () => {
+      const studSnap = await getDocs(query(collection(db, "students"), where("className", "==", schedule.className)));
+      setStudents(studSnap.docs.map(d => ({ id: d.id, ...d.data() })));
+      setLocalStatus({});
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [schedule?.id]);
+
   const isAllowed = schedule && timeStr >= schedule.startTime && timeStr <= schedule.endTime && !submittedSchedules[selected];
 
   const setStatus = (sid, status) => {
@@ -887,13 +1028,13 @@ function TakeAttendancePage({ user, onAlert }) {
   if (loading) return <div style={styles.spinner}>⏳ កំពុងផ្ទុកទិន្នន័យ...</div>;
 
   if (schedules.length === 0) {
-    return <div style={{ ...styles.card, textAlign: "center", color: "#475569", padding: 40 }}>📭 មិនមានម៉ោងបង្រៀនថ្ងៃនេះ</div>;
+    return <div style={{ ...styles.card, textAlign: "center", color: "#475569", padding: 40 }}>📭 មិនមានម៉ោងបង្រៀននៅ{dayLabel(todayDow())}នេះ</div>;
   }
 
   return (
     <div>
       <div style={styles.card}>
-        <div style={styles.cardTitle}>📋 ជ្រើសម៉ោង</div>
+        <div style={styles.cardTitle}>📋 ជ្រើសម៉ោង — {dayLabel(todayDow())}</div>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           {schedules.map(s => {
             const active = timeStr >= s.startTime && timeStr <= s.endTime;
@@ -906,7 +1047,7 @@ function TakeAttendancePage({ user, onAlert }) {
                 color: selected === s.id ? "#a78bfa" : "#94a3b8",
                 border: selected === s.id ? "2px solid #6366f1" : "1px solid #334155",
               }}>
-                {done ? "✅" : active ? "🟡" : past ? "🔴" : "⏳"} {s.startTime}–{s.endTime}
+                {done ? "✅" : active ? "🟡" : past ? "🔴" : "⏳"} {s.className} · {s.startTime}–{s.endTime}
               </button>
             );
           })}
