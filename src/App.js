@@ -285,7 +285,7 @@ function LoginPage({ onAlert }) {
         </button>
 
         <div style={{ marginTop: 16, padding: 12, background: "#0f172a", borderRadius: 8, fontSize: 11, color: "#475569" }}>
-          Admin : Email: sareyrathsoun@gmail.com, Password: admin123
+          Admin : Email: sareyrathsoun@gmail.com, Password: admin123456789
         </div>
       </div>
     </div>
